@@ -307,6 +307,6 @@ Released under the [MIT License](LICENSE). See `LICENSE` for details.
 **Expo_growth** · Team ID `VTU-QFF-HC-0192` · Tier `Online`
 · Built with ⚛️ Qiskit for the VTU-QFF Hackathon
 
-[⬆ Back to Top](#Expo_growth)
+[⬆ Back to Top](#expo_growth)
 
 </div>
