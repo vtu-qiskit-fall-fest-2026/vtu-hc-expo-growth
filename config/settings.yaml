@@ -1,0 +1,25 @@
+
+project:
+  name: Q Guards
+  version: 0.1.0
+  environment: development
+
+telemetry:
+  sensor_id: sensor-001
+  interval_seconds: 1
+  temperature_min: 20.0
+  temperature_max: 40.0
+  humidity_min: 30.0
+  humidity_max: 80.0
+
+security:
+  encryption: AES-256-GCM
+  replay_protection: true
+  sequence_number_required: true
+
+quantum:
+  simulator: qiskit_aer
+  shots: 1024
+
+monitoring:
+  log_level: INFO

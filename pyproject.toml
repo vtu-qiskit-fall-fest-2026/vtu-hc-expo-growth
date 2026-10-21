@@ -1,0 +1,27 @@
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "q-guards"
+version = "0.1.0"
+description = "Qiskit-based security analysis prototype for IoT telemetry"
+requires-python = ">=3.10"
+dependencies = [
+    "cryptography>=44.0,<47.0",
+    "qiskit>=2.0,<3.0",
+    "qiskit-aer>=0.17,<1.0",
+    "PyYAML>=6.0,<7.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0,<10.0"]
+dashboard = ["streamlit>=1.40,<2.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

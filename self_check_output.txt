@@ -1,0 +1,49 @@
+==========================================================
+Q GUARDS - AUTOMATED SELF-CHECK
+==========================================================
+Results reflect actual execution.
+
+=== 1. EXISTING PYTHON TEST SUITE ===
+........................................................................ [ 72%]
+...........................                                              [100%]
+99 passed in 1.82s
+[PASS] Existing pytest suite
+       pytest exit code: 0
+
+=== 2. TELEMETRY SECURITY SCENARIOS ===
+[PASS] Valid telemetry accepted
+       Gateway accepted the packet.
+[PASS] Tampered ciphertext rejected
+       Gateway rejected packet: Authentication failed: incorrect key or modified data
+[PASS] Invalid HMAC rejected
+       Gateway rejected packet: Sender authentication failed
+[PASS] Unauthorized sender rejected
+       Gateway rejected packet: Unauthorized sensor
+[PASS] Replay rejected
+       Duplicate rejected: Replay detected or sequence number out of order
+[PASS] Malformed packet rejected
+       Gateway rejected packet: Packet must contain byte nonce and ciphertext
+
+=== 3. QISKIT SIMULATION ===
+Counts: {'10': 293, '00': 604, '01': 106, '11': 21}
+Probabilities: {'10': 0.2861328125, '00': 0.58984375, '01': 0.103515625, '11': 0.0205078125}
+Shots: 1024
+Circuit depth: 5
+Operations: {'ry': 4, 'cx': 2, 'measure': 2}
+[PASS] Qiskit circuit simulation
+       Observed 1024 measurement shots.
+
+=== 4. FINAL SUMMARY ===
+[PASS] Existing pytest suite
+[PASS] Valid telemetry accepted
+[PASS] Tampered ciphertext rejected
+[PASS] Invalid HMAC rejected
+[PASS] Unauthorized sender rejected
+[PASS] Replay rejected
+[PASS] Malformed packet rejected
+[PASS] Qiskit circuit simulation
+
+Total checks: 8
+Passed:       8
+Failed:       0
+SELF-CHECK RESULT: PASS - all executed checks passed.
