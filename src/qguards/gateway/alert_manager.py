@@ -7,17 +7,23 @@ from datetime import datetime, timezone
 ALLOWED_SEVERITIES = {"INFO", "WARNING", "HIGH", "CRITICAL"}
 
 ALLOWED_EVENT_TYPES = {
+    "telemetry_accepted",
     "authentication_failure",
     "replay_detected",
     "tampering_detected",
     "unauthorized_sender",
     "invalid_packet",
     "sensor_disconnected",
+    "validation_error",
 }
 
 
-def create_alert(event_type: str, message: str, severity: str = "WARNING") -> dict:
-    """Create a structured security alert with a UTC timestamp."""
+def create_alert(
+    event_type: str,
+    message: str,
+    severity: str = "WARNING",
+) -> dict:
+    """Create a structured security event with a UTC timestamp."""
 
     if not isinstance(event_type, str) or event_type not in ALLOWED_EVENT_TYPES:
         raise ValueError("Unsupported security event type")

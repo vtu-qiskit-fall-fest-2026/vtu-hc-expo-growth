@@ -2,7 +2,7 @@
 """Q Guards: local IoT security monitoring dashboard."""
 
 from datetime import datetime, timezone
-import json
+import random
 
 import streamlit as st
 
@@ -27,22 +27,10 @@ st.caption(
     "Secure IoT Telemetry Monitoring | Local simulation and security testing"
 )
 
-# Keep cryptographic keys and replay-protection state consistent across reruns.
-if "qg_initialized" not in st.session_state:
-    st.session_state.encryption_key = generate_key()
-    st.session_state.auth_key = generate_auth_key()
-    st.session_state.trusted_keys = {
-        "sensor-001": st.session_state.auth_key
-    }
-    st.session_state.validator = GatewayValidator(
-        st.session_state.encryption_key,
-        st.session_state.trusted_keys,
-    )
-    st.session_state.next_sequence = 1
-    st.session_state.last_accepted = None
-    st.session_state.events = []
-    st.session_state.readings = []
-    st.session_state.metrics_data = {
+
+def empty_metrics():
+    """Create a fresh set of dashboard counters."""
+    return {
         "received": 0,
         "accepted": 0,
         "rejected": 0,
@@ -52,91 +40,115 @@ if "qg_initialized" not in st.session_state:
         "replay_attacks": 0,
         "invalid_packets": 0,
     }
+
+
+def initialize_dashboard():
+    """Initialize session state once per browser session."""
+    if st.session_state.get("qg_initialized", False):
+        return
+
+    encryption_key = generate_key()
+    auth_key = generate_auth_key()
+
+    st.session_state.encryption_key = encryption_key
+    st.session_state.auth_key = auth_key
+    st.session_state.trusted_keys = {"sensor-001": auth_key}
+    st.session_state.validator = GatewayValidator(
+        encryption_key,
+        st.session_state.trusted_keys,
+    )
+
+    st.session_state.next_sequence = 1
+    st.session_state.last_accepted = None
+    st.session_state.events = []
+    st.session_state.readings = []
+    st.session_state.metrics_data = empty_metrics()
     st.session_state.qg_initialized = True
 
 
+initialize_dashboard()
+
+
 def build_packet(sensor_id="sensor-001"):
-    """Create and protect one simulated telemetry message."""
+    """Create an encrypted and authenticated simulated sensor message."""
     sequence = st.session_state.next_sequence
     st.session_state.next_sequence += 1
 
     reading = {
         "sensor_id": sensor_id,
         "sequence_number": sequence,
-        "temperature_c": round(20 + __import__("random").random() * 20, 2),
-        "humidity_percent": round(30 + __import__("random").random() * 50, 2),
+        "temperature_c": round(20 + random.random() * 20, 2),
+        "humidity_percent": round(30 + random.random() * 50, 2),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
     plaintext = serialize_packet(reading)
     packet = encrypt(st.session_state.encryption_key, plaintext)
 
-    # A rogue sensor uses a different key and is not in the trusted registry.
+    # Rogue sensor identities are deliberately absent from the trusted registry.
     if sensor_id == "rogue-999":
         signing_key = generate_auth_key()
     else:
         signing_key = st.session_state.auth_key
 
-    tag = create_tag(signing_key, packet["nonce"] + packet["ciphertext"])
+    tag = create_tag(
+        signing_key,
+        packet["nonce"] + packet["ciphertext"],
+    )
     return packet, tag
 
 
 def record_event(event_type, message, severity):
+    """Add an event to the bounded session history."""
     alert = create_alert(event_type, message, severity=severity)
     st.session_state.events.insert(0, alert)
     st.session_state.events = st.session_state.events[:100]
 
 
 def submit_packet(scenario):
-    """Run a scenario through the real gateway validator."""
+    """Run one scenario through the configured gateway validator."""
     metrics = st.session_state.metrics_data
-    metrics["received"] += 1
 
+    # A replay cannot be attempted until a packet has been accepted.
+    # Do not count an unavailable test as a validation attempt.
     if scenario == "Replay previous packet":
         previous = st.session_state.last_accepted
         if previous is None:
-            st.warning("Accept a valid packet before testing replay protection.")
+            st.warning(
+                "Accept a valid packet before testing replay protection."
+            )
             return
         packet, tag = previous
+
     elif scenario == "Malformed packet":
         packet = {"nonce": "invalid", "ciphertext": b"invalid"}
         tag = b"\x00" * 32
+
     else:
         sensor_id = (
-            "rogue-999" if scenario == "Unauthorized sender"
+            "rogue-999"
+            if scenario == "Unauthorized sender"
             else "sensor-001"
         )
         packet, tag = build_packet(sensor_id)
 
         if scenario == "Tampered ciphertext":
             damaged = bytearray(packet["ciphertext"])
-            damaged[0] ^= 1
+            if damaged:
+                damaged[0] ^= 1
             packet["ciphertext"] = bytes(damaged)
 
         elif scenario == "Invalid HMAC":
             tag = b"\x00" * 32
 
+    # Count only packets that reach the validation call.
+    metrics["received"] += 1
+
     try:
         reading = st.session_state.validator.validate(packet, tag)
-        metrics["accepted"] += 1
-        st.session_state.readings.insert(0, reading)
-        st.session_state.readings = st.session_state.readings[:100]
 
-        st.session_state.last_accepted = (packet, tag)
-
-        record_event(
-            "telemetry_accepted",
-            f"Accepted telemetry from {reading['sensor_id']}, "
-            f"sequence {reading['sequence_number']}",
-            "INFO",
-        )
-        st.session_state.last_result = {
-            "accepted": True,
-            "scenario": scenario,
-            "message": "Packet authenticated and accepted.",
-        }
-
-    except Exception as exc:
+    except (ValueError, TypeError, KeyError) as exc:
+        # Every validation rejection is counted exactly once.
         metrics["rejected"] += 1
         reason = str(exc) or type(exc).__name__
 
@@ -167,27 +179,87 @@ def submit_packet(scenario):
             "message": reason,
         }
 
+    except Exception as exc:
+        # Unexpected failures must not be reported as successful validation.
+        metrics["rejected"] += 1
+        reason = f"Unexpected validation error: {type(exc).__name__}"
+        record_event("validation_error", f"{scenario}: {reason}", "HIGH")
+        st.session_state.last_result = {
+            "accepted": False,
+            "scenario": scenario,
+            "message": reason,
+        }
 
-# Top-level security metrics.
+    else:
+        metrics["accepted"] += 1
+
+        st.session_state.readings.insert(0, reading)
+        st.session_state.readings = st.session_state.readings[:100]
+        st.session_state.last_accepted = (packet, tag)
+
+        record_event(
+            "telemetry_accepted",
+            f"Accepted telemetry from {reading['sensor_id']}, "
+            f"sequence {reading['sequence_number']}",
+            "INFO",
+        )
+        st.session_state.last_result = {
+            "accepted": True,
+            "scenario": scenario,
+            "message": "Packet authenticated and accepted.",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Top-level security metrics
+# ---------------------------------------------------------------------------
+
 m = st.session_state.metrics_data
-total = m["accepted"] + m["rejected"]
-acceptance_rate = (100 * m["accepted"] / total) if total else 0
+total = m["received"]
+
+acceptance_rate = (
+    100.0 * m["accepted"] / total if total else 0.0
+)
+rejection_rate = (
+    100.0 * m["rejected"] / total if total else 0.0
+)
+
+# The same validation attempts must have exactly one final outcome.
+if m["received"] != m["accepted"] + m["rejected"]:
+    st.error("Metric consistency error: received does not equal accepted + rejected.")
 
 columns = st.columns(5)
 columns[0].metric("Messages received", m["received"])
 columns[1].metric("Accepted", m["accepted"])
 columns[2].metric("Rejected", m["rejected"])
-columns[3].metric("Attacks detected", (
-    m["tampering"] + m["authentication_failures"]
-    + m["unauthorized_senders"] + m["replay_attacks"]
-))
+columns[3].metric(
+    "Attacks detected",
+    (
+        m["tampering"]
+        + m["authentication_failures"]
+        + m["unauthorized_senders"]
+        + m["replay_attacks"]
+    ),
+)
 columns[4].metric("Acceptance rate", f"{acceptance_rate:.1f}%")
 
+st.caption(f"Rejection rate: {rejection_rate:.1f}%")
 st.divider()
 
+
 monitor_tab, attack_tab, quantum_tab, events_tab = st.tabs(
-    ["📡 Telemetry", "🧪 Attack Lab", "⚛️ Quantum Experiment", "🚨 Security Events"]
+    [
+        "📡 Telemetry",
+        "🧪 Attack Lab",
+        "⚛️ Quantum Experiment",
+        "🚨 Security Events",
+    ]
 )
+
+
+# ---------------------------------------------------------------------------
+# Telemetry monitor
+# ---------------------------------------------------------------------------
 
 with monitor_tab:
     st.subheader("Sensor telemetry")
@@ -198,15 +270,23 @@ with monitor_tab:
     if st.session_state.readings:
         st.dataframe(
             st.session_state.readings,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     else:
-        st.info("No accepted telemetry yet. Generate a valid message to begin.")
+        st.info(
+            "No accepted telemetry yet. Generate a valid message to begin."
+        )
 
     st.caption(
-        "Sensor values are randomly simulated. This is not a physical sensor feed."
+        "Sensor values are randomly simulated. "
+        "This is not a physical sensor feed."
     )
+
+
+# ---------------------------------------------------------------------------
+# Attack lab
+# ---------------------------------------------------------------------------
 
 with attack_tab:
     st.subheader("Controlled security tests")
@@ -244,16 +324,27 @@ with attack_tab:
     st.subheader("Attack detection counters")
     attack_cols = st.columns(4)
     attack_cols[0].metric("Tampering", m["tampering"])
-    attack_cols[1].metric("Authentication failures", m["authentication_failures"])
-    attack_cols[2].metric("Unauthorized senders", m["unauthorized_senders"])
+    attack_cols[1].metric(
+        "Authentication failures",
+        m["authentication_failures"],
+    )
+    attack_cols[2].metric(
+        "Unauthorized senders",
+        m["unauthorized_senders"],
+    )
     attack_cols[3].metric("Replay attempts", m["replay_attacks"])
+
+
+# ---------------------------------------------------------------------------
+# Quantum circuit experiment
+# ---------------------------------------------------------------------------
 
 with quantum_tab:
     st.subheader("Qiskit circuit experiment")
     st.warning(
-        "This quantum circuit is an experimental measurement demo. "
-        "Its score is not used to accept or reject telemetry and does not "
-        "demonstrate quantum-secured communication."
+        "This is an experimental quantum-circuit simulation. Its score "
+        "does not decide whether telemetry is accepted or rejected, and "
+        "it does not demonstrate quantum-secured communication or real QKD."
     )
 
     if st.button("Run quantum circuit simulation"):
@@ -268,17 +359,22 @@ with quantum_tab:
 
             st.write("Measurement counts")
             st.json(result["counts"])
+
             q1, q2, q3 = st.columns(3)
             q1.metric("Shots", result["shots"])
             q2.metric("Circuit depth", result["circuit_depth"])
             q3.metric("Experimental score", f"{score:.4f}")
+
             st.write("Operation counts")
             st.json(result["operation_counts"])
+
         except Exception as exc:
             st.error(f"Quantum simulation failed: {exc}")
 
     st.subheader("Classical rule-based baseline")
-    st.caption("Example score only; this is not a trained detection model.")
+    st.caption(
+        "Example score only; this is not a trained detection model."
+    )
 
     failed_auth = st.checkbox("Simulate failed authentication")
     replay_detected = st.checkbox("Simulate replay detection")
@@ -292,8 +388,14 @@ with quantum_tab:
                 "tampering_detected": tampering_detected,
             })
             st.json(baseline)
+
         except Exception as exc:
             st.error(f"Baseline evaluation failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Security event history
+# ---------------------------------------------------------------------------
 
 with events_tab:
     st.subheader("Recent security events")
@@ -301,7 +403,7 @@ with events_tab:
     if st.session_state.events:
         st.dataframe(
             st.session_state.events,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
     else:
@@ -310,12 +412,15 @@ with events_tab:
     if st.button("Clear dashboard history"):
         st.session_state.events = []
         st.session_state.readings = []
-        st.session_state.metrics_data = {
-            key: 0 for key in st.session_state.metrics_data
-        }
+        st.session_state.metrics_data = empty_metrics()
         st.session_state.last_accepted = None
         st.session_state.pop("last_result", None)
         st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------------
 
 with st.sidebar:
     st.header("System status")
@@ -325,6 +430,7 @@ with st.sidebar:
     st.write("**Sender authentication:** HMAC-SHA256")
     st.write("**Replay protection:** Sequence-based")
     st.write("**Quantum backend:** Qiskit Aer")
+
     st.divider()
     st.caption(
         "Demo keys are generated in memory for this session. "
